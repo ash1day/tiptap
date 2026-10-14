@@ -2,6 +2,13 @@ import { Extension } from '@tiptap/core'
 import type { Node as PMNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 
+import {
+  compositionPluginKey,
+  createCompositionPlugin,
+  hasPendingComposition,
+  trimComposition,
+} from './composition.js'
+
 export interface CharacterCountOptions {
   /**
    * The maximum number of characters that should be allowed. Defaults to `0`.
@@ -109,11 +116,25 @@ export const CharacterCount = Extension.create<CharacterCountOptions, CharacterC
   addProseMirrorPlugins() {
     let initialEvaluationDone = false
 
+    const compositionOptions = {
+      getLimit: () => this.options.limit,
+      measure: (node: PMNode) => this.storage.characters({ node }),
+    }
+
     return [
+      createCompositionPlugin(compositionOptions),
       new Plugin({
         key: new PluginKey('characterCount'),
         appendTransaction: (transactions, oldState, newState) => {
-          if (initialEvaluationDone) {
+          const { view } = this.editor
+
+          // Also catches compositions ended without `compositionend`, like the Android timeout
+          if (!view.composing && compositionPluginKey.getState(newState)) {
+            return trimComposition(newState, compositionOptions)
+          }
+
+          // Don't mistake a composition for initial content
+          if (initialEvaluationDone || hasPendingComposition(view, newState, transactions)) {
             return
           }
 
@@ -147,6 +168,11 @@ export const CharacterCount = Extension.create<CharacterCountOptions, CharacterC
 
           // Nothing has changed or no limit is defined. Ignore it.
           if (!transaction.docChanged || limit === 0 || limit === null || limit === undefined) {
+            return true
+          }
+
+          // Rejecting a composition breaks the IME, it is trimmed once it ends instead
+          if (transaction.getMeta('composition')) {
             return true
           }
 
